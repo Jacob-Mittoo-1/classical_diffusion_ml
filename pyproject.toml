@@ -1,10 +1,12 @@
 [project]
-name = "my_project"
+name = "classical_diffusion_ml"
 version = "0.0.1"
-description = "An example Python Package"
+description = "Machine learning for classical diffusion"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
-dependencies = []
+dependencies = [
+    "classical-diffusion",
+]
 
 [dependency-groups]
 dev = [
@@ -65,6 +67,9 @@ convention = "numpy"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+
+[tool.uv.sources]
+classical-diffusion = { git = "https://github.com/Matt-Ord/classical_diffusion" }
 
 
 [build-system]

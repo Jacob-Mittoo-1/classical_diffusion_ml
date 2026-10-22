@@ -1,6 +1,8 @@
-# Project Template
+# Classical Diffusion ML
 
-View the `phonon_lifetime` package documentation [here](https://matt-ord.github.io/phonon_lifetime/).
+Machine learning for classical diffusion, built on top of [`classical_diffusion`](https://github.com/Matt-Ord/classical_diffusion).
+
+View the `classical_diffusion_ml` package documentation [here](https://matt-ord.github.io/classical_diffusion_ml/).
 
 ## Setup
 
@@ -17,18 +19,6 @@ This project uses a **Dev Container** (via **VS Code**) and **[`uv`](https://git
    ```
 
    This will build the container if needed and connect you to the development environment.
-
-### Setting up the Template
-
-To setup the template
-
-- Re-name the `my_project` folder to `your_project_name`
-- Update references in `pyproject.toml`, including the project name, description, and python.analysis.include
-- Update path of imports in `tests/import_test.py` and `examples/example.py`
-- Update details in `docs/source/conf.py`
-- Update details in `docs/source/index.rst`
-- Update the GitHub workflow step to `Build Sphinx documentation` in `.github/workflows/deploy.yml`, and the link to docs in `README.md`
-- Update python.analysis.include in `.devcontainer/devcontainer.json`
 
 ### Dependency Management
 

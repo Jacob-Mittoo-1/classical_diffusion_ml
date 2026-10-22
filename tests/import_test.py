@@ -1,7 +1,9 @@
 def test_import() -> None:
     try:
-        import my_project  # noqa: PLC0415
+        import classical_diffusion_ml  # noqa: PLC0415
     except ImportError:
-        my_project = None  # ty:ignore[invalid-assignment]
+        classical_diffusion_ml = None  # ty:ignore[invalid-assignment]
 
-    assert my_project is not None, "my_project module should not be None"
+    assert classical_diffusion_ml is not None, (
+        "classical_diffusion_ml module should not be None"
+    )

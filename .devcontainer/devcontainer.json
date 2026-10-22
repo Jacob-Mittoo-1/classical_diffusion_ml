@@ -32,7 +32,7 @@
 				"python.testing.pytestEnabled": true,
 				"python.analysis.diagnosticMode": "workspace",
 				"python.analysis.include": [
-					"my_project"
+					"classical_diffusion_ml"
 				],
 				"python.analysis.autoImportCompletions": true,
 				"ty.diagnosticMode": "workspace"

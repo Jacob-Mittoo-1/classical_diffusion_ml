@@ -1,4 +1,4 @@
-project = "My Project"
+project = "Classical Diffusion ML"
 author = "Matthew Ord"
 version = "0.0.1"
 
