@@ -1,0 +1,192 @@
+from pathlib import Path
+
+import numpy as np
+import torch
+from scipy.constants import Boltzmann
+from torch import nn
+from torch.utils.data import DataLoader, TensorDataset
+
+from classical_diffusion.simulation import TimeSpan
+from classical_diffusion.util import cache_base_path
+from generate_training_data import generate_training_data
+
+LEARNING_RATE = 1e-3
+BATCH_SIZE = 500
+NUM_EPOCHS = 4_000
+CHECK_EVERY = 100
+EARLY_STOP = 0.5
+
+
+class ResidualBlock(nn.Module):
+    """Two-layer residual block with an identity skip connection."""
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.linear1 = nn.Linear(dim, dim)
+        self.linear2 = nn.Linear(dim, dim)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        residual = x
+        x = torch.relu(self.linear1(x))
+        x = self.linear2(x)
+        return torch.relu(x + residual)
+
+
+class ResNet(nn.Module):
+    """Predict hop time from the six simulation parameters."""
+
+    def __init__(self, hidden_dim: int = 16) -> None:
+        super().__init__()
+        self.input_layer = nn.Linear(6, hidden_dim)
+        self.residual_block = ResidualBlock(hidden_dim)
+        self.output_layer = nn.Linear(hidden_dim, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        # Scale temperature into kBT, matching the Equinox model.
+        x = torch.cat((x[..., :4], x[..., 4:5] * Boltzmann, x[..., 5:]), dim=-1)
+        x = torch.relu(self.input_layer(x))
+        x = self.residual_block(x)
+        return self.output_layer(x)
+
+
+def loss_fn(
+    model: nn.Module,
+    test_data: tuple[torch.Tensor, torch.Tensor, torch.Tensor],
+) -> torch.Tensor:
+    """Compute hop-time squared error weighted by the observed hop count."""
+    test_params, target_hop_times, test_num_hops = test_data
+
+    predicted_hop_times = model(test_params)
+    diff = target_hop_times - predicted_hop_times.reshape(-1)
+
+    return torch.mean(diff.square() * test_num_hops.reshape(-1))
+
+
+def train_model(
+    training_data: tuple[np.ndarray, np.ndarray, np.ndarray],
+    *,
+    resume: bool = False,
+) -> ResNet:
+    # Make the model's initial weights repeatable.
+    torch.manual_seed(1)
+
+    # Use a GPU if PyTorch can access one; otherwise use the CPU.
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    # Create the model and Adam optimizer.
+    model = ResNet(hidden_dim=16).to(device)
+    optimizer = torch.optim.Adam(model.parameters(), lr=LEARNING_RATE)
+    checkpoint_path = Path(__file__).with_name("model_checkpoint.pt")
+
+    # Optionally restore model weights, optimizer progress, and epoch history.
+    start_epoch = 0
+    losses: list[float] = []
+    if resume:
+        if not checkpoint_path.exists():
+            raise FileNotFoundError(f"No checkpoint found at {checkpoint_path}")
+        checkpoint = torch.load(
+            checkpoint_path,
+            map_location=device,
+            weights_only=True,
+        )
+        model.load_state_dict(checkpoint["model_state_dict"])
+        optimizer.load_state_dict(checkpoint["optimizer_state_dict"])
+        start_epoch = checkpoint["epoch"]
+        losses = checkpoint.get("losses", [])
+
+    # Keep the dataset on the CPU; move each batch to the model's device below.
+    training_params, training_hop_times, training_num_hops = (
+        torch.as_tensor(array, dtype=torch.float32)
+        for array in training_data
+    )
+
+    num_trajectories = len(training_params)
+    if num_trajectories == 0:
+        raise ValueError("Training data must contain at least one trajectory.")
+    actual_batch_size = min(BATCH_SIZE, num_trajectories)
+
+    training_dataset = TensorDataset(
+        training_params,
+        training_hop_times,
+        training_num_hops,
+    )
+
+    training_loader = DataLoader(
+        training_dataset,
+        batch_size=actual_batch_size,
+        shuffle=True,
+    )
+
+    last_epoch = start_epoch
+    last_loss: float | None = None
+    for epoch in range(start_epoch, NUM_EPOCHS):
+        model.train()
+        epoch_loss_sum = 0.0
+
+        for batch_params, batch_hop_times, batch_num_hops in training_loader:
+            batch_params = batch_params.to(device)
+            batch_hop_times = batch_hop_times.to(device)
+            batch_num_hops = batch_num_hops.to(device)
+
+            optimizer.zero_grad()
+            batch_loss = loss_fn(
+                model,
+                (batch_params, batch_hop_times, batch_num_hops),
+            )
+            batch_loss.backward()
+            optimizer.step()
+
+            # Weight each batch's mean loss by its number of examples.
+            epoch_loss_sum += batch_loss.detach().item() * len(batch_params)
+
+        epoch_loss = epoch_loss_sum / num_trajectories
+        last_epoch = epoch + 1
+        last_loss = epoch_loss
+        losses.append(epoch_loss)
+        print(f"Epoch {epoch + 1:03d} | Loss: {epoch_loss:.5f}")
+
+        if (epoch + 1) % CHECK_EVERY == 0:
+            torch.save(
+                {
+                    "epoch": epoch + 1,
+                    "model_state_dict": model.state_dict(),
+                    "optimizer_state_dict": optimizer.state_dict(),
+                    "loss": epoch_loss,
+                    "losses": losses,
+                },
+                checkpoint_path,
+            )
+
+            # Stop if loss has changed very little over the last check interval.
+            if len(losses) >= CHECK_EVERY:
+                loss_difference = losses[-CHECK_EVERY] - epoch_loss
+            else:
+                loss_difference = float("inf")
+            if abs(loss_difference) < EARLY_STOP:
+                print("Early stopping triggered: loss plateau reached.")
+                break
+
+    # Save the final state too, including when training stops between intervals.
+    if last_epoch > start_epoch and last_loss is not None:
+        torch.save(
+            {
+                "epoch": last_epoch,
+                "model_state_dict": model.state_dict(),
+                "optimizer_state_dict": optimizer.state_dict(),
+                "loss": last_loss,
+                "losses": losses,
+            },
+            checkpoint_path,
+        )
+    return model
+
+
+if __name__ == "__main__":
+    with cache_base_path(Path()):
+        params, hop_times, num_hops = generate_training_data(
+            time_span=TimeSpan(t_start=0.0, t_end=100.0, n_steps=1_000),
+            n_trajectories=10,
+        )
+
+    print(params.shape, hop_times.shape, num_hops.shape)
+    trained_model = train_model((params, hop_times, num_hops))
