@@ -5,7 +5,12 @@ version = "0.0.1"
 description = "Machine learning for classical diffusion"
 readme = "README.md"
 requires-python = ">=3.14,<3.15"
-dependencies = ["classical-diffusion", "pysr>=2.7.2", "torch"]
+dependencies = [
+    "classical-diffusion",
+    "pysr>=2.7.2",
+    "torch",
+    "jax[cuda13]>=0.10.2",
+]
 
 [dependency-groups]
 dev = [
@@ -79,3 +84,7 @@ explicit = true
 [build-system]
 requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["classical_diffusion_ml*"]
+exclude = ["outputs*"]
