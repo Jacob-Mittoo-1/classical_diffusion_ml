@@ -36,7 +36,7 @@ def compare_diffusion_constants(
     omega_wells = np.linspace(0.2, 2.0, n_omega_well)
     isf_diffusion = np.full(omega_wells.shape, np.nan)
     lifson_jackson_diffusion = np.empty(omega_wells.shape)
-    time_span = TimeSpan(t_start=0.0, t_end=100.0, n_steps=1_000)
+    time_span = TimeSpan(t_start=0.0, t_end=800.0, n_steps=8_000)
 
     for index, omega_well in enumerate(omega_wells):
         params = KramersParameters(
@@ -86,7 +86,7 @@ def compare_diffusion_constants(
 
 def main(
     *,
-    q: float = 0.05,
+    q: float = 0.01,
     n_omega_well: int = 10,
     n_trajectories: int = 128,
 ) -> None:
@@ -125,7 +125,7 @@ def main(
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument(
-        "--q", type=float, default=0.05, help="ISF wavevector magnitude"
+        "--q", type=float, default=0.01, help="ISF wavevector magnitude"
     )
     parser.add_argument("--n-omega-well", type=int, default=10)
     parser.add_argument("--n-trajectories", type=int, default=128)
