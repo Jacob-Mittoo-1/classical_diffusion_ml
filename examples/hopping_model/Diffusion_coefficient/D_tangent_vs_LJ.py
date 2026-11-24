@@ -61,6 +61,13 @@ def get_tangent_diffusion_vs_omega_well(
     return tangent_diffusion, tangent_uncertainty
 
 
+def lifson_jackson_diffusion_from_params(params: KramersParameters) -> float:
+    """Lifson–Jackson diffusion constant D = k_LJ * delta_x**2 for one parameter set."""
+    system = ClassicalKramersSystem1D(params=params)
+    hopping_rate = get_lifson_jackson_rate(system, delta_x=params.delta_x)
+    return float(hopping_rate * params.delta_x**2)
+
+
 def get_lifson_jackson_diffusion(
     *,
     omega_wells: np.ndarray,
@@ -77,12 +84,7 @@ def get_lifson_jackson_diffusion(
             temperature=0.5 / Boltzmann,
             gamma=0.1,
         )
-        system = ClassicalKramersSystem1D(params=params)
-        hopping_rate = get_lifson_jackson_rate(
-            system,
-            delta_x=params.delta_x,
-        )
-        lifson_jackson_diffusion[index] = hopping_rate * params.delta_x**2
+        lifson_jackson_diffusion[index] = lifson_jackson_diffusion_from_params(params)
 
         print(
             f"omega_well={float(omega_well):.3f}: "
@@ -139,7 +141,7 @@ def main(
 ) -> None:
     """Compare trajectory-derived and analytical diffusion constants."""
     omega_wells = np.linspace(0.2, 2.0, n_omega_well)
-    time_span = TimeSpan(t_start=0.0, t_end=200.0, n_steps=2_000)
+    time_span = TimeSpan(t_start=0.0, t_end=100.0, n_steps=1_000)
 
     tangent_diffusion, tangent_uncertainty = get_tangent_diffusion_vs_omega_well(
         omega_wells=omega_wells,
@@ -160,7 +162,7 @@ def main(
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
-    parser.add_argument("--n-omega-well", type=int, default=10)
+    parser.add_argument("--n-omega-well", type=int, default=6)
     parser.add_argument("--n-trajectories", type=int, default=64)
     arguments = parser.parse_args()
     main(

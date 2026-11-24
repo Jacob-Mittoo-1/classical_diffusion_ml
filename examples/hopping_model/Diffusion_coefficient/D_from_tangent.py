@@ -5,6 +5,7 @@ import os
 # JAX otherwise preallocates nearly all available GPU memory before execution.
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
+from collections.abc import Iterator
 from pathlib import Path
 
 import jax
@@ -36,6 +37,31 @@ def generate_trajectories(
     trajectories
         Array with shape ``(n_trajectories, n_time_samples)``.
     """
+    batches = list(
+        iter_trajectory_batches(
+            params=params,
+            time_span=time_span,
+            n_trajectories=n_trajectories,
+            seed=seed,
+        )
+    )
+    times = batches[0][0]
+    return times, np.concatenate([batch for _times, batch in batches], axis=0)
+
+
+def iter_trajectory_batches(
+    *,
+    params: KramersParameters,
+    time_span: TimeSpan,
+    n_trajectories: int,
+    batch_size: int = 8,
+    seed: int = 234,
+) -> Iterator[tuple[np.ndarray, np.ndarray]]:
+    """Yield ``(times, trajectories)`` in batches of ``batch_size`` trajectories.
+
+    The random keys are fixed up front from ``seed``, so the trajectories are
+    identical to those from ``generate_trajectories`` with the same seed.
+    """
     system = KramersSystem1D(params=params).as_canonical()
     initial_conditions = (jnp.zeros((1, 1)), jnp.zeros((1, 1)))
     if n_trajectories < 1:
@@ -55,22 +81,11 @@ def generate_trajectories(
         # positions has shape (dimension, initial_condition, time).
         return times, positions[0, 0]
 
-    chunk_size = 8
-    trajectory_chunks = []
-
     # Run only a small batch at once so JAX does not reserve a 12 GiB GPU
-    # workspace for all 128 trajectories.
-    first_chunk_keys = keys[:chunk_size]
-    times_by_run, first_chunk = jax.vmap(run_one)(first_chunk_keys)
-    times = np.asarray(times_by_run[0])
-    trajectory_chunks.append(np.asarray(first_chunk))
-
-    for start in range(chunk_size, n_trajectories, chunk_size):
-        chunk_keys = keys[start : start + chunk_size]
-        _times_by_run, chunk = jax.vmap(run_one)(chunk_keys)
-        trajectory_chunks.append(np.asarray(chunk))
-
-    return times, np.concatenate(trajectory_chunks, axis=0)
+    # workspace for all trajectories.
+    for start in range(0, n_trajectories, batch_size):
+        times_by_run, batch = jax.vmap(run_one)(keys[start : start + batch_size])
+        yield np.asarray(times_by_run[0]), np.asarray(batch)
 
 
 def fit_long_time_diffusion(
@@ -103,6 +118,26 @@ def fit_long_time_diffusion(
     displacements = trajectories - initial_positions
     msd = np.mean(displacements**2, axis=0)
 
+    diffusion_constant, diffusion_uncertainty = fit_msd_line(
+        times,
+        msd,
+        start_fraction=start_fraction,
+        end_fraction=end_fraction,
+    )
+    return diffusion_constant, diffusion_uncertainty, msd
+
+
+def fit_msd_line(
+    times: np.ndarray,
+    msd: np.ndarray,
+    *,
+    start_fraction: float,
+    end_fraction: float,
+) -> tuple[float, float]:
+    """Fit a straight line to ``msd`` within a fractional time window.
+
+    Returns ``(D, sigma_D)`` with D = slope / 2.
+    """
     start_time = times[0] + start_fraction * (times[-1] - times[0])
     end_time = times[0] + end_fraction * (times[-1] - times[0])
     window = (times >= start_time) & (times <= end_time)
@@ -118,10 +153,69 @@ def fit_long_time_diffusion(
         cov=True,
     )
     slope, _intercept = coefficients
-    diffusion_constant = slope / 2.0
-    diffusion_uncertainty = float(np.sqrt(covariance[0, 0]) / 2.0)
+    return float(slope / 2.0), float(np.sqrt(covariance[0, 0]) / 2.0)
 
-    return diffusion_constant, diffusion_uncertainty, msd
+
+def time_averaged_msd_per_trajectory(trajectories: np.ndarray) -> np.ndarray:
+    """Time-averaged MSD of each trajectory, averaged over all start times.
+
+    For lag index m, returns mean_k (x[k + m] - x[k])**2 over every start index
+    k = 0 .. T - m - 1. Computed with the FFT method in O(T log T) per trajectory.
+    Assumes equally spaced samples.
+
+    Returns
+    -------
+    tamsd
+        Array with shape ``(n_trajectories, n_time_samples)``; column m is lag m.
+    """
+    x = np.asarray(trajectories, dtype=float)
+    if x.ndim != 2:
+        msg = "trajectories must have shape (n_trajectories, n_time_samples)"
+        raise ValueError(msg)
+    n_times = x.shape[1]
+    n_origins = n_times - np.arange(n_times)  # number of start times per lag
+
+    # sum_k x[k+m]^2 + x[k]^2, built by removing end points as m grows
+    squares = x**2
+    removed = np.cumsum(squares + squares[:, ::-1], axis=1)
+    sum_of_squares = np.empty_like(x)
+    sum_of_squares[:, 0] = 2.0 * squares.sum(axis=1)
+    sum_of_squares[:, 1:] = sum_of_squares[:, :1] - removed[:, :-1]
+
+    # sum_k x[k+m] x[k], the autocorrelation, via zero-padded FFT
+    spectrum = np.fft.rfft(x, n=2 * n_times, axis=1)
+    autocorrelation = np.fft.irfft(spectrum * spectrum.conj(), axis=1)[:, :n_times]
+
+    return (sum_of_squares - 2.0 * autocorrelation) / n_origins
+
+
+def fit_time_averaged_diffusion(
+    times: np.ndarray,
+    trajectories: np.ndarray,
+    *,
+    start_fraction: float = 0.2,
+    end_fraction: float = 0.5,
+) -> tuple[float, float, np.ndarray]:
+    """Fit D from the time-averaged MSD (all start times, then all trajectories).
+
+    The window fractions refer to lag time. Long lags have few start times, so
+    they are noisy; by default only lags up to half the run are fitted.
+
+    Returns
+    -------
+    diffusion_constant, diffusion_uncertainty, tamsd
+        ``tamsd`` is indexed by lag, with lag times ``times - times[0]``.
+    """
+    times = np.asarray(times, dtype=float)
+    lag_times = times - times[0]
+    tamsd = time_averaged_msd_per_trajectory(trajectories).mean(axis=0)
+    diffusion_constant, diffusion_uncertainty = fit_msd_line(
+        lag_times,
+        tamsd,
+        start_fraction=start_fraction,
+        end_fraction=end_fraction,
+    )
+    return diffusion_constant, diffusion_uncertainty, tamsd
 
 
 def plot_msd_with_tangent(
@@ -216,7 +310,7 @@ def run_tangent_diffusion(
     params: KramersParameters,
     time_span: TimeSpan,
     n_trajectories: int,
-    start_fraction: float = 0.5,
+    start_fraction: float = 0.01,
     seed: int = 234,
     output_path: Path | None = None,
 ) -> tuple[float, np.ndarray, np.ndarray]:
@@ -249,7 +343,7 @@ def run_tangent_diffusion(
 
 if __name__ == "__main__":
     params = KramersParameters(
-        omega_well=1.0,
+        omega_well=0.2,
         omega_barrier=5.0,
         barrier_energy=1.0,
         m=1.0,
@@ -259,7 +353,7 @@ if __name__ == "__main__":
 
     run_tangent_diffusion(
         params=params,
-        time_span=TimeSpan(t_start=0.0, t_end=200.0, n_steps=2_000),
-        n_trajectories=16,
+        time_span=TimeSpan(t_start=0.0, t_end=100.0, n_steps=1_000),
+        n_trajectories=512,
         start_fraction=0.01,
     )
