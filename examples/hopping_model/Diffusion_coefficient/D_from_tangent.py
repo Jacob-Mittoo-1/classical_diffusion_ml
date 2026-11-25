@@ -5,20 +5,24 @@ import os
 # JAX otherwise preallocates nearly all available GPU memory before execution.
 os.environ.setdefault("XLA_PYTHON_CLIENT_PREALLOCATE", "false")
 
-from collections.abc import Iterator
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import jax
 import jax.numpy as jnp
 import matplotlib.pyplot as plt
 import numpy as np
 from classical_diffusion.jax.langevin import (
+    FixedStep,
     KramersParameters,
     KramersSystem1D,
     solve_many_overdamped,
 )
 from classical_diffusion.simulation import TimeSpan
 from scipy.constants import Boltzmann
+
+if TYPE_CHECKING:
+    from collections.abc import Iterator
 
 
 def generate_trajectories(
@@ -49,18 +53,21 @@ def generate_trajectories(
     return times, np.concatenate([batch for _times, batch in batches], axis=0)
 
 
-def iter_trajectory_batches(
+def iter_trajectory_batches(  # noqa: PLR0913
     *,
     params: KramersParameters,
     time_span: TimeSpan,
     n_trajectories: int,
-    batch_size: int = 8,
+    batch_size: int = 32,
     seed: int = 234,
+    step_size: float = 5e-4,
 ) -> Iterator[tuple[np.ndarray, np.ndarray]]:
     """Yield ``(times, trajectories)`` in batches of ``batch_size`` trajectories.
 
     The random keys are fixed up front from ``seed``, so the trajectories are
     identical to those from ``generate_trajectories`` with the same seed.
+    The SDE is integrated with fixed steps of ``step_size``, which must be
+    small enough to resolve the fastest motion of the system.
     """
     system = KramersSystem1D(params=params).as_canonical()
     initial_conditions = (jnp.zeros((1, 1)), jnp.zeros((1, 1)))
@@ -75,6 +82,7 @@ def iter_trajectory_batches(
             system,
             time_span,
             initial_conditions,
+            step_config=FixedStep(step_size=step_size),
             _key=key,
         )
 

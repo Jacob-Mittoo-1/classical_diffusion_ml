@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from collections.abc import Callable
+import time
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -14,6 +15,9 @@ from D_from_tangent import (
 )
 from D_tangent_vs_LJ import lifson_jackson_diffusion_from_params
 from scipy.constants import Boltzmann
+
+if TYPE_CHECKING:
+    from collections.abc import Callable
 
 
 def _check_points(n_trajectories: int, check_every: int) -> list[int]:
@@ -47,6 +51,8 @@ def _streaming_fits(  # noqa: PLR0913
     n_done = 0
     diffusion: list[float] = []
     uncertainty: list[float] = []
+    start_time = time.perf_counter()
+    last_time = start_time
 
     for times, batch in iter_trajectory_batches(
         params=params,
@@ -68,11 +74,14 @@ def _streaming_fits(  # noqa: PLR0913
             )
             diffusion.append(d)
             uncertainty.append(sigma)
+            now = time.perf_counter()
             print(
                 f"n={n}/{n_trajectories}: D={d:.6g} ± {sigma:.6g} "
-                f"({100 * (d - d_lj) / d_lj:+.1f}% vs LJ)",
+                f"({100 * (d - d_lj) / d_lj:+.1f}% vs LJ) "
+                f"[elapsed {now - start_time:.1f}s, +{now - last_time:.1f}s]",
                 flush=True,
             )
+            last_time = now
 
     return np.asarray(n_values), np.asarray(diffusion), np.asarray(uncertainty)
 
@@ -218,17 +227,18 @@ if __name__ == "__main__":
         temperature=0.5 / Boltzmann,
         gamma=0.1,
     )
-    time_span = TimeSpan(t_start=0.0, t_end=200.0, n_steps=2_000)
+    time_span = TimeSpan(t_start=0.0, t_end=100.0, n_steps=1_000)
 
-    run_convergence(
-        params=params,
-        time_span=time_span,
-        n_trajectories=128,
-        check_every=8,
-    )
+    # run_convergence(
+    #     params=params,
+    #     time_span=time_span,
+    #     n_trajectories=128,
+    #     check_every=8,
+    # )
     run_time_averaged_convergence(
         params=params,
         time_span=time_span,
-        n_trajectories=128,
-        check_every=8,
+        n_trajectories=1028,
+        check_every=32,
+        seed=142,
     )
